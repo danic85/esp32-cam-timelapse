@@ -20,11 +20,17 @@
 #include <SD_MMC.h>
 #include "esp_camera.h"
 
-#define MINUTES_BETWEEN_PHOTOS 30
+#define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
+#define TIME_TO_SLEEP  30        /* Time ESP32 will go to sleep (in seconds) */
+
+RTC_DATA_ATTR int bootCount = 0;
+
+//#define SECONDS_BETWEEN_PHOTOS 3
 
 // Pins for ESP32-CAM
 
 #define FLASH_PIN         4
+#define LED_PIN           33
 // Camera pins
 #define PWDN_GPIO_NUM     32
 #define RESET_GPIO_NUM    -1
@@ -44,6 +50,14 @@
 #define HREF_GPIO_NUM     23
 #define PCLK_GPIO_NUM     22
 
+// include library to read and write from flash memory
+#include <EEPROM.h>
+
+// define the number of bytes you want to access
+#define EEPROM_SIZE 64
+
+int boot_index;
+
 bool startMicroSD() {
   Serial.print("Starting microSD... ");
 
@@ -51,6 +65,8 @@ bool startMicroSD() {
   // https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/sd_pullup_requirements.html#pull-up-conflicts-on-gpio13
   pinMode(13, OUTPUT);
   digitalWrite(13, HIGH);
+
+  pinMode(LED_PIN, OUTPUT);
 
   if(SD_MMC.begin("/sdcard", true)) {
     Serial.println("OKAY");
@@ -138,10 +154,10 @@ void takePhoto(String filename) {
     file.write(fb->buf, fb->len);
     file.close();
 
-    // Momentarily blink the flash
-    digitalWrite(FLASH_PIN, HIGH);
+    // Momentarily blink the led
+    digitalWrite(LED_PIN, LOW);
     delay(100);
-    digitalWrite(FLASH_PIN, LOW);
+    digitalWrite(LED_PIN, HIGH);
     delay(500);
   } else {
     Serial.println("Unable to write " + filename);
@@ -151,25 +167,57 @@ void takePhoto(String filename) {
   esp_camera_fb_return(fb);
 }
 
+int getNextBootIndex() {
+  // initialize EEPROM with predefined size
+  EEPROM.begin(EEPROM_SIZE);
+  boot_index = EEPROM.read(0);
+  if (boot_index == NULL || boot_index > 100) {
+    boot_index = 1;
+  }
+  boot_index = boot_index + 1;
+  EEPROM.write(0, boot_index);
+  EEPROM.commit();
+  Serial.print("Boot Index: ");
+  Serial.println(boot_index);
+}
+
 void setup() {
+
+  delay(1000); //Take some time to open up the Serial Monitor
+
+  //Increment boot number and print it every reboot
+  ++bootCount;
+  Serial.println("Boot number: " + String(bootCount));
+
+  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+  Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) +
+  " Seconds");
+
   // Initialize the peripherals
   Serial.begin(115200);
   while(!Serial) delay(100);
+  
 
   startMicroSD();
   startCamera();
 
-  delay(5000); // Delay 5 seconds before first photo
+  doLoop();
+
+  Serial.println("Going to sleep now");
+  Serial.flush(); 
+  //digitalWrite(FLASH_PIN, LOW);
+  esp_deep_sleep_start();
 }
 
-void loop() {
+void doLoop() {
   // Keep a count of the number of photos we have taken
-  static int number = 0;
-  number++;
+  static int number = bootCount;
 
   // Construct a filename that looks like "/photo_0001.jpg"
   
   String filename = "/photo_";
+  filename += boot_index;
+  filename += "_";
   if(number < 1000) filename += "0";
   if(number < 100)  filename += "0";
   if(number < 10)   filename += "0";
@@ -177,8 +225,8 @@ void loop() {
   filename += ".jpg";
   
   takePhoto(filename);
+}
 
-  // Delay until the next photo
-
-  delay(MINUTES_BETWEEN_PHOTOS * 60 * 1000);
+void loop() {
+  
 }
